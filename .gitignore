@@ -1,0 +1,17 @@
+
+project_specification.txt
+
+__pycache__/
+*.pyc
+
+.venv/
+venv/
+
+
+.env
+.streamlit/secrets.toml
+
+.pytest_cache/
+
+Thumbs.db
+desktop.ini
