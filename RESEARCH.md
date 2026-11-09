@@ -1,4 +1,4 @@
-# Research Plan
+# Research Log
 
 ## Day 1 - 09/11/2026
 
@@ -9,6 +9,13 @@
   - The reason I decided this is because I will be learning new concepts/ideas in the networking part of the project so would prefer to dedicate more time to that.
 
 ### Research (1) - What happens when your browser loads a website (e.g. https://example.com)
+
+Sources:
+
+- https://aws.amazon.com/blogs/mobile/what-happens-when-you-type-a-url-into-your-browser/
+  - Order of DNS caching layers
+- https://www.cloudflare.com/learning/dns/what-is-dns/
+  - How DNS works, DNS servers involved in loading a webpage, types of DNS queries.
 
 1. DNS Lookup: The hostname is turned into an IP address
 2. TCP Connect: A connection is opened to that IP on port 443.
@@ -40,3 +47,111 @@ After some research into the options available to me, I had 3 main choices.
    - A downside would be that I would be explaining curl's numbers rather than my own code.
 
 In the end, I decided to choose socket/ssl because it gives me a separate DNS timing and to follow the main goal of the project which is to understand each step myself.
+
+### Research (4) - Implementing a basic DNS lookup
+
+- Read (https://www.geeksforgeeks.org/python/time-perf_counter-function-in-python/) to understand what time.perf_counter() does.
+  - It returns a high-resolution timer value used to measure how long a piece of code takes to run.
+- Read (https://pythontic.com/modules/socket/getaddrinfo) to understand what socket.getaddrinfo() does.
+  - If we know a network service by host name, or the IP address of the network service either in form of IPv4 or IPv6 along with the port number of the network service, getaddrinfo() will return a list of tuples containing information about socket(s) that can be created with the service.
+  - For now, I will be focusing on IPv4, so to do that socket.AF_INET is a constant used that represents the IPv4 address family (https://docs.python.org/3/library/socket.html).
+- socket.SOCK_STREAM (https://docs.python.org/3/library/socket.html) is a constant that specifies a connection-oriented, reliable, sequenced and two-way byte stream transport protocol used to create a TCP socket.
+
+```powershell
+PS D:\Projects\EAS-Project> python diagnosis.py
+DnsResult(ip='172.66.147.243', duration_ms=16.00999999936903)
+PS D:\Projects\EAS-Project> python diagnosis.py
+DnsResult(ip='172.66.147.243', duration_ms=7.258100000399281)
+PS D:\Projects\EAS-Project> python diagnosis.py
+DnsResult(ip='172.66.147.243', duration_ms=7.661100000404986)
+```
+
+I did three consecutive runs of diagnosis.py and found that the duration dropped significantly after the first run. I found this to be due to DNS Caching (https://www.geeksforgeeks.org/computer-networks/what-is-dns-caching/) which temporarily stores previously resolved DNS records so that future queries can be answered faster without repeating the complete DNS resolution process. It reduces lookup latency, DNS traffic, and load on upstream DNS servers.
+
+```powershell
+PS D:\Projects\EAS-Project> ipconfig /flushdns
+
+Windows IP Configuration
+
+Successfully flushed the DNS Resolver Cache.
+PS D:\Projects\EAS-Project> python diagnosis.py
+DnsResult(ip='104.20.23.154', duration_ms=16.242699999565957)
+PS D:\Projects\EAS-Project>
+```
+
+I tested this by flushing the DNS cache, and with that the duration returns to its original timing.
+
+- Limitation: `ipconfig /flushdns` only clears the Windows cache, not my ISP's DNS server (Virgin Media, see the nslookup output below). So the 16 ms after flushing might not be a full lookup. To make sure, I tested this in the section titled "Testing the caching layers with nip.io" below.
+- After the flush, the IP changed from `172.66.147.243` to `104.20.23.154`. See "Round-robin DNS" below.
+
+#### Verifying the IP with nslookup
+
+```powershell
+PS D:\Projects\EAS-Project> nslookup example.com
+Server:  cache1.service.virginmedia.net
+Address:  194.168.4.100
+
+Non-authoritative answer:
+Name:    example.com
+Addresses:  2606:4700:10::6814:179a
+          2606:4700:10::ac42:93f3
+          104.20.23.154
+          172.66.147.243
+```
+
+- The IP my code returned (`172.66.147.243`) is in the list, so the lookup is correct.
+- example.com has two IPv4 and two IPv6 addresses. This is why I filter with `socket.AF_INET`: without it, `results[0]` could be an IPv6 address.
+- "Non-authoritative answer" means the answer came from my ISP's caching DNS server, not from the server that owns example.com.
+
+#### Round-robin DNS
+
+- nslookup listed `104.20.23.154` first, while my code got `172.66.147.243`, and after flushing the cache my code got `104.20.23.154`. DNS servers often rotate the order of addresses to spread load across servers (https://www.cloudflare.com/learning/dns/glossary/round-robin-dns/), so the first result the code picks can change between runs.
+
+#### Comparing against curl
+
+```powershell
+PS D:\Projects\EAS-Project> curl.exe -4 -o NUL -s -w "%{time_namelookup}\n" https://example.com
+0.006972
+```
+
+- curl's DNS time was roughly 7 ms matching the cached runs. Most likely, these were answered from the Windows cache and for a fairer comparison, I should flush the cache before each tool's run.
+
+#### Testing the caching layers with nip.io
+
+To check whether the 16 ms after flushing was really my ISP's cache, I needed hostnames that couldn't be cached anywhere. To achieve this, I used nip.io which is a DNS service that resolves `anything.<IP>.nip.io` to that IP (I checked their homepage first: https://nip.io). Using a made-up word at the front means nobody has looked that name up before.
+
+For each round I used a new word and ran:
+
+1. a lookup of a name not cached anywhere, so my ISP has to ask nip.io's servers
+2. the same lookup again, answered from the Windows cache
+3. `ipconfig /flushdns`, then the lookup again, so only the ISP has it cached
+
+```powershell
+PS D:\Projects\EAS-Project> python -c "from diagnosis import resolve_dns; print(resolve_dns('banana4821.1.1.1.1.nip.io'))"
+DnsResult(ip='1.1.1.1', duration_ms=188.9562999986083)
+PS D:\Projects\EAS-Project> python -c "from diagnosis import resolve_dns; print(resolve_dns('banana4821.1.1.1.1.nip.io'))"
+DnsResult(ip='1.1.1.1', duration_ms=8.254700000179582)
+PS D:\Projects\EAS-Project> ipconfig /flushdns
+
+Windows IP Configuration
+
+Successfully flushed the DNS Resolver Cache.
+PS D:\Projects\EAS-Project> python -c "from diagnosis import resolve_dns; print(resolve_dns('banana4821.1.1.1.1.nip.io'))"
+DnsResult(ip='1.1.1.1', duration_ms=22.925999999642954)
+```
+
+Results over 3 rounds:
+
+| Round      | 1. Not cached anywhere | 2. Windows cache | 3. ISP cache only |
+| ---------- | ---------------------- | ---------------- | ----------------- |
+| banana4821 | 189 ms                 | 8.3 ms           | 22.9 ms           |
+| mango7390  | 176 ms                 | 8.4 ms           | 16.1 ms           |
+| kiwi5163   | 175 ms                 | 7.4 ms           | 16.4 ms           |
+
+What I learned:
+
+- There are three distinct levels: full lookup takes roughly 175–189 ms, ISP cache roughly 16–23 ms, Windows cache roughly 7–8 ms.
+- The 16 ms result I got for example.com after flushing Windows DNS caching matches the ISP-cache column.
+- A possible reason that a full lookup is so slow: nip.io's homepage lists its nameservers in Singapore, the USA and Poland, so my ISP has to ask a server far away although this hasn't been tested to be certain.
+
+In the future, I need to decide how the tool should handle/explain how the DNS time the tool shows is dependent on what's cached at that moment.
