@@ -7,16 +7,24 @@ from dataclasses import dataclass
 
 @dataclass
 class DnsResult:
-    ip: str
+    ip: str | None  # None if the lookup failed
     duration_ms: float
+    error: str | None = None  # None if the lookup succeeded
 
 
 def resolve_dns(hostname: str) -> DnsResult:
-    """Look up the IPv4 address of a hostname and time how long it takes."""
+    """Look up the IPv4 address of a hostname and time how long it takes.
+
+    A failed lookup is returned as a result with `error` set, not raised.
+    """
     start = time.perf_counter()
-    results = socket.getaddrinfo(
-        hostname, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
-    )
+    try:
+        results = socket.getaddrinfo(
+            hostname, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
+        )
+    except socket.gaierror as e:
+        duration_ms = (time.perf_counter() - start) * 1000
+        return DnsResult(ip=None, duration_ms=duration_ms, error=str(e))
     duration_ms = (time.perf_counter() - start) * 1000
 
     ip = results[0][4][0]
@@ -25,3 +33,5 @@ def resolve_dns(hostname: str) -> DnsResult:
 
 if __name__ == "__main__":
     print(resolve_dns("example.com"))
+    print(resolve_dns("doesnotexist.invalid"))
+

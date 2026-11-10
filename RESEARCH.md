@@ -155,3 +155,40 @@ What I learned:
 - A possible reason that a full lookup is so slow: nip.io's homepage lists its nameservers in Singapore, the USA and Poland, so my ISP has to ask a server far away although this hasn't been tested to be certain.
 
 In the future, I need to decide how the tool should handle/explain how the DNS time the tool shows is dependent on what's cached at that moment.
+
+---
+
+## Day 2 (10/11/2026)
+
+Tested triggering DNS failure by running:
+
+```powershell
+
+python -c "from diagnosis import resolve_dns; print(resolve_dns('doesnotexist.invalid'))"
+
+```
+
+Output:
+
+```powershell
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from diagnosis import resolve_dns; print(resolve_dns('doesnotexist.invalid'))
+                                             ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\EAS-Project\diagnosis.py", line 17, in resolve_dns
+    results = socket.getaddrinfo(
+        hostname, 443, family=socket.AF_INET, type=socket.SOCK_STREAM
+    )
+  File "C:\Python313\Lib\socket.py", line 975, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno 11001] getaddrinfo failed
+
+```
+
+### Research (5) - Handling DNS Lookup Failure
+
+As expected, due to this using .invalid which is a domain ending reserved so that it never exists, this triggered an Erno 11001 error: a DNS resolution failure meaning the system tried to look up a hostname to convert it to an IP address but the lookup failed because the host could not be found or reached (https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2).
+
+Following this, `socket.gaierror` is now handled by the code, and puts the error in the code.
