@@ -3,6 +3,33 @@
 import socket
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
+
+
+@dataclass
+class ParsedUrl:
+    hostname: str
+    path: str
+
+
+def parse_url(url: str) -> ParsedUrl:
+    """Check a user-entered URL and extract the parts the diagnosis needs.
+
+    Raises ValueError if the URL can't be diagnosed.
+    """
+    url = url.strip()
+    if not url:
+        raise ValueError("URL is empty")
+    if "://" not in url:
+        url = "https://" + url
+
+    parts = urlparse(url)
+    if parts.scheme != "https":
+        raise ValueError(f"Only https:// URLs are supported, got {parts.scheme}://")
+    if not parts.hostname:
+        raise ValueError("URL has no hostname")
+
+    return ParsedUrl(hostname=parts.hostname, path=parts.path or "/")
 
 
 @dataclass
@@ -32,6 +59,14 @@ def resolve_dns(hostname: str) -> DnsResult:
 
 
 if __name__ == "__main__":
+    print(parse_url("https://example.com/page?x=1"))
+    print(parse_url("example.com"))
     print(resolve_dns("example.com"))
     print(resolve_dns("doesnotexist.invalid"))
+    print(parse_url(" example.com"))
+    print(parse_url("EXAMPLE.COM"))
+    print(parse_url("https://example.com:8443/x"))
+    #print(parse_url("http://example.com"))  
+
+
 

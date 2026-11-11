@@ -189,6 +189,80 @@ socket.gaierror: [Errno 11001] getaddrinfo failed
 
 ### Research (5) - Handling DNS Lookup Failure
 
-As expected, due to this using .invalid which is a domain ending reserved so that it never exists, this triggered an Erno 11001 error: a DNS resolution failure meaning the system tried to look up a hostname to convert it to an IP address but the lookup failed because the host could not be found or reached (https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2).
+As expected, due to this using .invalid which is a domain ending reserved so that it never exists, this triggered an Errno 11001 error: a DNS resolution failure meaning the system tried to look up a hostname to convert it to an IP address but the lookup failed because the host could not be found or reached (https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2).
 
-Following this, `socket.gaierror` is now handled by the code, and puts the error in the code.
+Following this, `socket.gaierror` is now handled by the code, and puts the error in the result.
+
+## Day 3 (11/11/2026)
+
+### Research (6) - Edge cases in the DNS Lookup
+
+After adding error handling, I tested `resolve_dns` with unusual inputs:
+
+| Input                    | Result              | Time     |
+| ------------------------ | ------------------- | -------- |
+| `"example.com"`          | IP returned         | ~8 ms    |
+| `"doesnotexist.invalid"` | error (Errno 11001) | ~10 ms   |
+| `""`                     | `192.168.0.14`      | ~0.5 ms  |
+| `"not a hostname"`       | error (Errno 11001) | ~0.04 ms |
+
+Findings:
+
+- The empty string succeeded, returning `192.168.0.14`. From memory, that looked like my local IP address. I confirmed by running `ipconfig` in the terminal suggesting that on Windows, running `getaddrinfo` treats an empty hostname as "this machine". This would cause an empty input to be reported as "DNS OK".
+- `"not a hostname"` failed in 0.04ms, meaning Windows most likely rejected it as an invalid name without asking a DNS server as the time is far too fast for a network request.
+- I also found that passing a full URL such as (`https://example.com:8443/x`) or a name with a leading space (`" example.com"`) to `resolve_dns` fails instantly as it expects a bare hostname.
+- DNS names are case-insensitive: `EXAMPLE.COM` resolved to the same IP as `example.com`.
+
+### Research (7) - Validating the input with a separate step
+
+After considering three places to validate input including: inside `resolve_dns`, in a separate step before DNS, or only in the UI, I chose a separate `parse_url` step as users will be typing URLs rather than hostnames. This means that hostnames need extracting anyway, and this allows `resolve_dns` to work on DNS only.
+
+Before writing it, I tested how Python's `urllib.parse.urlparse` handles different inputs (https://docs.python.org/3/library/urllib.parse.html):
+
+| Input                          | scheme  | hostname      | path          |
+| ------------------------------ | ------- | ------------- | ------------- |
+| `https://example.com/page?x=1` | `https` | `example.com` | `/page`       |
+| `example.com`                  | (empty) | `None`        | `example.com` |
+| `https://`                     | `https` | `None`        | (empty)       |
+| `https://not a host/`          | `https` | `not a host`  | `/`           |
+| `HTTPS://Example.COM`          | `https` | `example.com` | (empty)       |
+
+- Without `https://`, urlparse treats `example.com` as a path instead of a hostname. To fix this, `parse_url` adds `https://` when there's no scheme to match a browser's behaviour.
+- urlparse lowercases the hostname.
+- urlparse doesn't check that the hostname is valid (`not a host` was accepted), but the DNS step rejects it anyway.
+
+Decisions:
+
+- As of now, only `https://` is accepted as the following steps assume TLS on port 443.
+- Bad inputs raise a `ValueError`, but a DNS failure is returned as a result. A DNS failure is something the tool discovered about the website while an empty or malformed URL is the user's mistake meaning diagnosis should not start.
+- Query strings and custom ports are ignored for now for simplicity.
+
+Testing:
+
+```python
+
+print(parse_url(" example.com"))
+print(parse_url("EXAMPLE.COM"))
+print(parse_url("https://example.com:8443/x"))
+print(parse_url("http://example.com"))
+
+```
+
+Output:
+
+```powershell
+
+ParsedUrl(hostname='example.com', path='/')
+ParsedUrl(hostname='example.com', path='/')
+ParsedUrl(hostname='example.com', path='/x')
+Traceback (most recent call last):
+  File "D:\Projects\EAS-Project\diagnosis.py", line 69, in <module>
+    print(parse_url("http://example.com"))
+          ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\EAS-Project\diagnosis.py", line 28, in parse_url
+    raise ValueError(f"Only https:// URLs are supported, got {parts.scheme}://")
+ValueError: Only https:// URLs are supported, got http://
+
+```
+
+All results match the expected outcomes.
