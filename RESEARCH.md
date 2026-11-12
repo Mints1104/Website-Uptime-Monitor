@@ -266,3 +266,92 @@ ValueError: Only https:// URLs are supported, got http://
 ```
 
 All results match the expected outcomes.
+
+## Day 4 (12/11/2026)
+
+### Research (8) - The TCP three-way handshake
+
+Sources:
+
+- https://www.geeksforgeeks.org/computer-networks/tcp-3-way-handshake-process/
+- https://www.cloudflare.com/learning/ddos/glossary/tcp-ip/
+
+The TCP 3-Way handshake is the process used by the Transmission Control Protocol (TCP) to establish a reliable connection between a client and a server before data transmission begins. It synchronises sequence numbers and ensures that both the client and server are ready to exchange data reliably.
+
+TCP Flags used in handshake:
+
+1. SYN (Synchronize): Initiates a TCP connection by sending the client's Initial Sequence Number (ISN)
+2. ACK (Acknowledgment): Acknowledges the received sequence number and confirms successful receipt of the segment.
+3. SYN + ACK (Combination of SYN and ACK Flags): Acknowledges the client's ISN while sending the server's own Initial Sequence Number (ISN)
+
+First, the source sends a SYN "initial request" packet to the target server in order to start the dialogue. Then, the target server sends a SYN-ACK packet to agree to the process. Lastly, the source sends an ACK packet to the target to confirm the process, after which the message content can be sent.
+
+`socket.create_connection()` function waits for the TCP three-way handshake to finish because the TCP is a connection-oriented protocol that requires both endpoints to synchronize state and verify two-way communication before any application can be safely sent.
+
+**What I tried:**
+
+```powershell
+ping example.com
+
+Pinging example.com [104.20.23.154] with 32 bytes of data:
+Reply from 104.20.23.154: bytes=32 time=23ms TTL=58
+Reply from 104.20.23.154: bytes=32 time=21ms TTL=58
+Reply from 104.20.23.154: bytes=32 time=23ms TTL=58
+Reply from 104.20.23.154: bytes=32 time=19ms TTL=58
+
+Ping statistics for 104.20.23.154:
+    Packets: Sent = 4, Received = 4, Lost = 0 (0% loss),
+Approximate round trip times in milli-seconds:
+    Minimum = 19ms, Maximum = 23ms, Average = 21ms
+
+
+
+TcpResult(sock=<socket.socket fd=376, family=2, type=1, proto=0, laddr=('192.168.0.14', 52093), raddr=('104.20.23.154', 443)>, duration_ms=17.05370000036055, error=None)
+```
+
+What I learned:
+Ping averaged 21ms and my TCP connect took 17ms. This fits the handshake taking roughly one round trip (SYN out, SYN-ACK back).
+
+### Research (9) - The 2-second refusal
+
+```powershell
+
+python -c "from diagnosis import connect_tcp; print(connect_tcp('127.0.0.1'))"
+TcpResult(sock=None, duration_ms=2032.058700000107, error='ConnectionRefusedError: [WinError 10061] No connection could be made because the target machine actively refused it')
+
+curl.exe -S -s -o NUL -w "total: %{time_total}\n" https://127.0.0.1
+curl: (7) Failed to connect to 127.0.0.1 port 443 after 2036 ms: Could not connect to server
+total: 2.036750
+```
+
+I saw that it takes roughly 2 seconds for a refusal in Python and when using Curl, showing that this delay is from Windows rather than my code.
+
+I found this GitHub issue: (https://github.com/curl/curl/issues/14144) and a comment written by a developer of Curl who states "If your local host is 127.0.0.1 and ::1, the ipv6 is tried first." and that if the local server does not seem to be listening there and curl will wait 200ms before trying the ipv4 address. Following this, it retries the failed connection a couple of times before giving up. However, this does not explain my result because I used the IPv4 address 127.0.0.1 directly.
+According to (https://www.ibm.com/docs/en/bcfsoz?topic=tcpip-timeout-behavior-windows-application-server), Windows relies on `TcpMaxConnectRetransmissions` registry setting to govern how many times SYN packets are retransmitted before failing.
+
+I did further testing by running `netsh interface tcp show global` which shows Max SYN Retransmissions = 4 and Initial RTO = 1000ms on my machine. These settings control retries, but the numbers don't add up to the 2s I measured so I couldn't confirm exactly why a refusal takes 2s. This did show that the delay is in Windows though, as curl shows the same delay.
+
+```powershell
+
+
+netsh interface tcp show global
+Querying active state...
+
+TCP Global Parameters
+----------------------------------------------
+Receive-Side Scaling State          : enabled
+Receive Window Auto-Tuning Level    : normal
+Add-On Congestion Control Provider  : default
+ECN Capability                      : disabled
+RFC 1323 Timestamps                 : disabled
+Initial RTO                         : 1000
+Receive Segment Coalescing State    : enabled
+Non Sack Rtt Resiliency             : disabled
+Max SYN Retransmissions             : 4
+Fast Open                           : enabled
+Fast Open Fallback                  : enabled
+HyStart                             : enabled
+Proportional Rate Reduction         : enabled
+Pacing Profile                      : off
+
+```

@@ -20,3 +20,10 @@ This project is assisted by Claude Code.
 - Claude produced a table of how `urlparse` handles different inputs; I re-ran it myself to verify.
 - Claude drafted text for RESEARCH.md, which I edited and checked against my own test results.
 - Claude was used to draft commit messages which was reviewed before committing.
+
+## Day 4 (12/11/2026)
+
+- Claude's curl command used time_connect, which reads 0 for a failed connection; switched to time_total and -S
+- Claude guessed that Windows Max SYN Retransmissions was 2, I ran `netsh interface tcp show global` which showed it was actually 4.
+- Claude helped guide what I researched regarding TCP.
+- Claude was used to draft commit messages which was reviewed before committing.

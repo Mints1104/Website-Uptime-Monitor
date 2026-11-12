@@ -58,6 +58,30 @@ def resolve_dns(hostname: str) -> DnsResult:
     return DnsResult(ip=ip, duration_ms=duration_ms)
 
 
+@dataclass
+class TcpResult:
+    sock: socket.socket | None  # the open connection; None if connecting failed
+    duration_ms: float
+    error: str | None = None  # None if the connection succeeded
+
+
+def connect_tcp(ip: str, timeout: float = 5.0) -> TcpResult:
+    """Open a TCP connection to an IP on port 443 and time how long it takes.
+
+    On success the socket is left open for the TLS step; the caller must close it.
+    A failed connection is returned as a result with `error` set, not raised.
+    """
+    start = time.perf_counter()
+    try:
+        sock = socket.create_connection((ip, 443), timeout=timeout)
+    except OSError as e:
+        duration_ms = (time.perf_counter() - start) * 1000
+        return TcpResult(sock=None, duration_ms=duration_ms, error=f"{type(e).__name__}: {e}")
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    return TcpResult(sock=sock, duration_ms=duration_ms)
+
+
 if __name__ == "__main__":
     print(parse_url("https://example.com/page?x=1"))
     print(parse_url("example.com"))
@@ -66,7 +90,13 @@ if __name__ == "__main__":
     print(parse_url(" example.com"))
     print(parse_url("EXAMPLE.COM"))
     print(parse_url("https://example.com:8443/x"))
-    #print(parse_url("http://example.com"))  
+    #print(parse_url("http://example.com"))
+
+    dns = resolve_dns("example.com")
+    tcp = connect_tcp(dns.ip)
+    print(tcp)
+    if tcp.sock:
+        tcp.sock.close()  
 
 
 
