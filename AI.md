@@ -27,3 +27,11 @@ This project is assisted by Claude Code.
 - Claude guessed that Windows Max SYN Retransmissions was 2, I ran `netsh interface tcp show global` which showed it was actually 4.
 - Claude helped guide what I researched regarding TCP.
 - Claude was used to draft commit messages which was reviewed before committing.
+
+## Day 5 (13/11/2026)
+
+- Claude helped guide what I researched regarding TLS.
+- Claude was used to clean up typos, repetition & made some tidy-ups such as removing tracking parameters from a URL I provided as a source.
+- Claude's guess that the revocation check was slowing curl down wasn't supported by my --ssl-no-revoke test.
+- Claude expected verify_flags to print flag names, but it printed 557088 so I had to check the bits individually.
+- Claude was used to draft commit messages which was reviewed before committing.

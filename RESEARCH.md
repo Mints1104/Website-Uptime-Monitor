@@ -355,3 +355,162 @@ Proportional Rate Reduction         : enabled
 Pacing Profile                      : off
 
 ```
+
+## Day 5 (13/11/2026)
+
+### Research (10) - What happens in a TLS handshake?
+
+Sources:
+
+- https://www.cloudflare.com/learning/ssl/what-happens-in-a-tls-handshake/
+- https://www.logicmonitor.com/deep-dive/http3-vs-http2/tls1-2-vs-1-3
+
+TLS is an encryption and authentication protocol designed to secure internet communications. During a TLS handshake, the two communicating sides exchange messages to acknowledge each other, verify each other, establish the cryptographic algorithms they will use, and agree on session keys forming a foundational part of how HTTPS works.
+
+During the course of a TLS handshake, the client and server together will do the following:
+
+1. Specify which version of TLS (TLS 1.0, 1.2, 1.3, etc.) they will use
+2. Decide on which cipher suites they will use
+3. Authenticate the identity of the server via the server's public key and the SSL certificate authority's digital signature
+4. Generate session keys in order to use symmetric encryption after the handshake is complete
+
+The exact steps vary depending on the key exchange algorithm used. Cloudflare's step-by-step example uses the RSA key exchange, where the client sends a random "premaster secret" encrypted with the server's public key, and only the server can decrypt it with its private key. RSA key exchange is now considered insecure and was removed in TLS 1.3.
+
+**TLS 1.2 vs 1.3**
+
+TLS 1.3 has fewer round trips, stronger cipher suites and mandatory forward secrecy.
+
+- Handshake: TLS 1.2 requires two round trips, TLS 1.3 requires only one round trip (RTT), with an option of 0-RTT when reconnecting to a previously visited site.
+- Security: TLS 1.2 supports over a hundred combinations of cryptographic algorithms, many of them insecure. TLS 1.3 supports only Authenticated Encryption with Associated Data (AEAD).
+- Compression: TLS 1.2 supports compression, which is removed in TLS 1.3.
+
+**TLS 1.2 (2 round trips):**
+
+1. Client Hello: the client lists the TLS versions and cipher suites it supports, plus a random number (the "client random").
+2. Server Hello: the server picks a version and cipher suite, sends its own random number (the "server random") and its certificate (containing its public key).
+3. Key exchange: the client checks the certificate is trusted by a CA, then sends a "premaster secret" encrypted with the server's public key. Both sides combine this with the two random numbers to make the same session keys.
+4. Finished: both sides confirm they're switching to the session keys, then encrypted data starts.
+
+**TLS 1.3 (1 round trip):**
+
+1. Client Hello: the client also sends its key-exchange information up front, not just its supported options.
+2. Server Hello + Finished: the server can create the keys straight away, and replies with its choices, certificate and Finished message all at once.
+3. The client verifies the certificate, sends Finished, and encrypted data starts.
+
+**Why 1.3 is faster:** the client sends its key-exchange information in the very first message, so the server doesn't have to reply with options first and wait. This removes one full round trip.
+
+**What I tried:**
+
+```powershell
+python diagnosis.py
+example.com -> TlsResult(sock=<ssl.SSLSocket fd=444, family=2, type=1, proto=0, laddr=('192.168.0.14', 52396), raddr=('172.66.147.243', 443)>, duration_ms=28.285399999731453, version='TLSv1.3', error=None)
+example.com -> TlsResult(sock=<ssl.SSLSocket fd=432, family=2, type=1, proto=0, laddr=('192.168.0.14', 52418), raddr=('172.66.147.243', 443)>, duration_ms=27.571500000703963, version='TLSv1.3', error=None)
+example.com -> TlsResult(sock=<ssl.SSLSocket fd=436, family=2, type=1, proto=0, laddr=('192.168.0.14', 52452), raddr=('172.66.147.243', 443)>, duration_ms=24.406099999396247, version='TLSv1.3', error=None)
+```
+
+(Three separate runs; only the example.com TLS line from each is shown.)
+
+**What I learned:** example.com used TLSv1.3, and the handshake took ~24–28 ms across three runs. This is close to one ping round trip to example.com (~21 ms average, see Research (8)), which fits TLS 1.3 needing one round trip plus some cryptography work on each side.
+
+### Research (11) - Certificates
+
+Sources:
+
+- https://www.paloaltonetworks.com/cyberpedia/what-is-a-certificate-chain-of-trust
+- https://www.digicert.com/blog/what-is-a-certificate-authority
+- https://docs.python.org/3/library/ssl.html
+
+A certificate authority (CA) is a trusted organisation that verifies identities and issues digital certificates to secure websites, software, email and connected devices.
+
+**What is the "chain of trust"**
+The certificate chain of trust functions as the structural framework for public key infrastructure (PKI), establishing trust across decentralised networks. When an application attempts to create a secure connection, it cannot implicitly trust a single standalone certificate provided by a remote server. Instead, it must trace a path of signatures back to a known, verified identity.
+This process relies entirely on asymmetric cryptography, where each entity in the path is validated by the public key of its parent authority. The root certificate sits at the apex of this vertical structure.
+The chain of trust checks cryptographic signatures, validity dates, domain names and revocation lists.
+
+**What I tried:**
+
+I ran `tls_handshake` against three badssl.com test sites, which have deliberately broken certificates (the example.com run is in Research (10)):
+
+```powershell
+expired.badssl.com -> TlsResult(sock=None, duration_ms=300.35, version=None, error='SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1018)')
+self-signed.badssl.com -> TlsResult(sock=None, duration_ms=276.23, version=None, error='SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1018)')
+wrong.host.badssl.com -> TlsResult(sock=None, duration_ms=248.31, version=None, error="SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: Hostname mismatch, certificate is not valid for 'wrong.host.badssl.com'. (_ssl.c:1018)")
+```
+
+Each site fails a different part of the chain of trust check:
+
+| Site                   | Check that fails                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| expired.badssl.com     | Validity dates: the certificate's expiry date has passed                                  |
+| self-signed.badssl.com | Chain of trust: the certificate is signed by itself, not by a CA in my trusted root store |
+| wrong.host.badssl.com  | Domain name: the certificate is valid, but for a different hostname                       |
+
+**Where Python gets its trusted roots:**
+The Python documentation says `create_default_context()` automatically calls `load_default_certs()`, which on Windows loads CA certificates from the system's "CA" and "ROOT" stores.
+
+**Does Python check revocation?**
+The docs say that in `VERIFY_DEFAULT` mode CRLs (certificate revocation lists) are not checked. I checked which flags my context actually uses:
+
+```powershell
+PS> python -c "import ssl; print(ssl.create_default_context().verify_flags)"
+557088
+PS> python -c "import ssl; f = ssl.create_default_context().verify_flags; print(repr(f)); print('CRL leaf:', bool(f & ssl.VERIFY_CRL_CHECK_LEAF)); print('CRL chain:', bool(f & ssl.VERIFY_CRL_CHECK_CHAIN))"
+<VerifyFlags.VERIFY_X509_STRICT|VERIFY_X509_TRUSTED_FIRST|VERIFY_X509_PARTIAL_CHAIN: 557088>
+CRL leaf: False
+CRL chain: False
+```
+
+The first command printed a plain number because `verify_flags` is a set of bit flags stored as one integer, so I used `repr()` and checked the CRL bits individually.
+
+**What I learned:**
+
+- Certificate checking happens on my own machine during the TLS handshake, so a bad certificate shows up as a TLS-step failure (`SSLCertVerificationError`). The error message says which check failed, which my tool can show to the user.
+- Python's default context checks the chain, dates and hostname, but not revocation (both CRL flags are off). My tool would accept a revoked certificate.
+- curl on Windows (Schannel) does check revocation by default, but turning it off with `--ssl-no-revoke` didn't change curl's TLS time (see Research (12)), so this isn't why curl is slower.
+
+
+### Research (12) - Python vs curl TLS times
+
+Sources:
+- https://curl.se/docs/manpage.html#--ssl-no-revoke
+- https://docs.python.org/3/library/ssl.html
+
+In Research (10) my Python TLS handshake to example.com took roughly 24–28 ms. I wanted to check this against another tool, so I measured the same handshake with curl.
+
+**What I tried:**
+
+```powershell
+PS> curl.exe -4 -o NUL -s -w "connect: %{time_connect}\ntls done: %{time_appconnect}\n" https://example.com
+connect: 0.023503
+tls done: 0.064063
+```
+
+`time_connect` is when the TCP connection finished and `time_appconnect` is when the TLS handshake finished, so the TLS time is the difference between them.
+
+| Tool | Run | TLS time |
+|---|---|---|
+| Python (`tls_handshake`) | 3 runs | 24.4, 27.6, 28.3 ms |
+| curl | run 1 | 64.1 − 23.5 = 40.6 ms |
+| curl | run 2 | 70.0 − 24.4 = 45.6 ms |
+| curl | run 3 | 73.2 − 25.0 = 48.2 ms |
+| curl `--ssl-no-revoke` | 1 run | 87.1 − 38.0 = 49.1 ms |
+
+curl was consistently roughly 15–20 ms slower. To see why, I checked which TLS library each tool uses:
+
+```powershell
+PS> curl.exe -V
+curl 8.13.0 (Windows) libcurl/8.13.0 Schannel zlib/1.3.1 WinIDN
+PS> python -c "import ssl; print(ssl.OPENSSL_VERSION)"
+OpenSSL 3.0.15 3 Sep 2024
+```
+
+curl on Windows uses Schannel (Windows' own TLS library), while Python's `ssl` module uses OpenSSL meaning  the two tools run different TLS code.
+
+One idea was that Schannel checks certificate revocation, which Python doesn't (Research (11)). The curl docs say `--ssl-no-revoke` turns this check off for Schannel. However, the TLS time with it turned off (49.1 ms) was no faster, so revocation checking doesn't explain the gap.
+
+**What I learned:**
+
+- Different tools can report different times for the same step because they use different implementations underneath. Timings are only comparable between runs of the same tool.
+- I couldn't find the exact cause of the gap. It is probably something inside Schannel versus OpenSSL, but I didn't find a source that confirms this, so I'm leaving it unresolved.
+- For my tool this doesn't matter much. What matters is that my own measurements are consistent between runs.
+

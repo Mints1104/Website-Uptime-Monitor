@@ -1,6 +1,7 @@
 """Diagnose a website connection step by step: DNS, TCP, TLS, HTTP."""
 
 import socket
+import ssl
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -82,6 +83,34 @@ def connect_tcp(ip: str, timeout: float = 5.0) -> TcpResult:
     return TcpResult(sock=sock, duration_ms=duration_ms)
 
 
+@dataclass
+class TlsResult:
+    sock: ssl.SSLSocket | None  # the encrypted connection; None if the handshake failed
+    duration_ms: float
+    version: str | None = None  # e.g. "TLSv1.3"; None if the handshake failed
+    error: str | None = None  # None if the handshake succeeded
+
+
+def tls_handshake(sock: socket.socket, hostname: str) -> TlsResult:
+    """Do a TLS handshake on an open TCP socket and time how long it takes.
+
+    The server's certificate is verified against `hostname`.
+    On success the TLS socket is left open for the HTTP step; the caller must close it.
+    On failure the TCP socket is closed here and the error is returned, not raised.
+    """
+    context = ssl.create_default_context()
+    start = time.perf_counter()
+    try:
+        tls_sock = context.wrap_socket(sock, server_hostname=hostname)
+    except OSError as e:
+        duration_ms = (time.perf_counter() - start) * 1000
+        sock.close()
+        return TlsResult(sock=None, duration_ms=duration_ms, error=f"{type(e).__name__}: {e}")
+    duration_ms = (time.perf_counter() - start) * 1000
+
+    return TlsResult(sock=tls_sock, duration_ms=duration_ms, version=tls_sock.version())
+
+
 if __name__ == "__main__":
     print(parse_url("https://example.com/page?x=1"))
     print(parse_url("example.com"))
@@ -96,7 +125,16 @@ if __name__ == "__main__":
     tcp = connect_tcp(dns.ip)
     print(tcp)
     if tcp.sock:
-        tcp.sock.close()  
+        tcp.sock.close()
+
+    # TLS: one good site, then sites with deliberately broken certificates
+    for host in ["example.com", "expired.badssl.com", "self-signed.badssl.com", "wrong.host.badssl.com"]:
+        dns = resolve_dns(host)
+        tcp = connect_tcp(dns.ip)
+        tls = tls_handshake(tcp.sock, host)
+        print(host, "->", tls)
+        if tls.sock:
+            tls.sock.close()  
 
 
 
