@@ -176,6 +176,45 @@ def http_get(sock: ssl.SSLSocket, hostname: str, path: str) -> HttpResult:
     )
 
 
+@dataclass
+class DiagnosisResult:
+    url: ParsedUrl
+    dns: DnsResult  # always runs, so never None
+    tcp: TcpResult | None = None  # None if an earlier step failed
+    tls: TlsResult | None = None
+    http: HttpResult | None = None
+
+    @property
+    def total_ms(self) -> float:
+        """Total time of the steps that ran (DNS + TCP + TLS + HTTP), like web.dev's TTFB."""
+        steps = [self.dns, self.tcp, self.tls, self.http]
+        return sum(step.duration_ms for step in steps if step is not None)
+
+
+def diagnose(url: str) -> DiagnosisResult:
+    """Run every step in order (DNS, TCP, TLS, HTTP) and stop at the first one that fails.
+
+    Raises ValueError if the URL is invalid (from parse_url).
+    Network failures are returned in the result, not raised.
+    """
+    parsed = parse_url(url)
+
+    result = DiagnosisResult(url=parsed, dns=resolve_dns(parsed.hostname))
+    if result.dns.error:
+        return result
+
+    result.tcp = connect_tcp(result.dns.ip)
+    if result.tcp.error:
+        return result
+
+    result.tls = tls_handshake(result.tcp.sock, parsed.hostname)
+    if result.tls.error:
+        return result
+
+    result.http = http_get(result.tls.sock, parsed.hostname, parsed.path)
+    return result
+
+
 if __name__ == "__main__":
     print(parse_url("https://example.com/page?x=1"))
     print(parse_url("example.com"))
@@ -208,6 +247,25 @@ if __name__ == "__main__":
         tls = tls_handshake(tcp.sock, host)
         http = http_get(tls.sock, host, "/")
         print(host, "->", http)
+
+    # diagnose(): one URL that works, then one failure at each step
+    print()
+    for url in [
+        "example.com",  # all steps succeed
+        "google.com",  # succeeds with a 301 redirect
+        "doesnotexist.invalid",  # fails at DNS
+        "https://10.255.255.1",  # fails at TCP (unreachable IP, takes ~5 s to time out)
+        "expired.badssl.com",  # fails at TLS
+    ]:
+        result = diagnose(url)
+        print(url, "->", result)
+        print("total_ms:", result.total_ms)
+        print()
+
+    try:
+        diagnose("http://example.com")  # invalid input: should raise
+    except ValueError as e:
+        print("ValueError:", e)
 
 
 

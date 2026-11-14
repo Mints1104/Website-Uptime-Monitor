@@ -43,3 +43,4 @@ This project is assisted by Claude Code.
 - Claude transcribed the MDN request/response diagram into text for RESEARCH.md; I checked it against the image.
 - Claude added my test output to RESEARCH.md and fixed typos.
 - Claude was used to draft commit messages which was reviewed before committing.
+- Claude wrote `diagnose` and `DiagnosisResult` after I made the design decisions (one field per step, invalid URLs raise ValueError, total_ms as a property). I tested one URL failing at each step and checked total_ms by hand.

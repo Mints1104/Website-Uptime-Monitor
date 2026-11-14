@@ -618,3 +618,50 @@ tls done: 0.200303
 - The HTTP step was much slower than TCP or TLS for example.com (82ms vs 16 and 22ms) because it includes the server preparing its reply and not just network round trips.
 - My status code and redirect matched curl's exactly, while the timings differed between single runs.
 - HTTP/1.1 keeps connections open by default, so the same connection can be reused for more requests. I send Connection: close because my tool only makes one request, so the server can close the connection once it has replied.
+
+### Research (14) - Running all the steps together with diagnose()
+
+`diagnose(url)` runs DNS → TCP → TLS → HTTP in order and stops at the first step that fails. Steps that never ran stay `None`, and `total_ms` adds up the steps that did run (like web.dev's TTFB from Research (13)).
+
+**What I tried:**
+
+I ran `diagnose` on one URL that works, one that redirects, one failure at each step, and one invalid URL:
+
+```powershell
+PS> python diagnosis.py
+example.com -> DiagnosisResult(url=ParsedUrl(hostname='example.com', path='/'), dns=DnsResult(ip='172.66.147.243', duration_ms=0.33799999982875306, error=None), tcp=TcpResult(sock=<socket.socket [closed] fd=-1, family=2, type=1, proto=0>, duration_ms=17.230499999641324, error=None), tls=TlsResult(sock=<ssl.SSLSocket [closed] fd=-1, family=2, type=1, proto=0>, duration_ms=20.510399999693618, version='TLSv1.3', error=None), http=HttpResult(status_code=200, duration_ms=78.40230000056181, reason='OK', location=None, error=None))
+total_ms: 116.4811999997255
+
+google.com -> DiagnosisResult(url=ParsedUrl(hostname='google.com', path='/'), dns=DnsResult(ip='142.250.117.138', duration_ms=0.6537999997817678, error=None), tcp=TcpResult(sock=<socket.socket [closed] fd=-1, family=2, type=1, proto=0>, duration_ms=17.79490000080841, error=None), tls=TlsResult(sock=<ssl.SSLSocket [closed] fd=-1, family=2, type=1, proto=0>, duration_ms=23.57209999991028, version='TLSv1.3', error=None), http=HttpResult(status_code=301, duration_ms=53.14009999983682, reason='Moved Permanently', location='https://www.google.com/', error=None))
+total_ms: 95.16090000033728
+
+doesnotexist.invalid -> DiagnosisResult(url=ParsedUrl(hostname='doesnotexist.invalid', path='/'), dns=DnsResult(ip=None, duration_ms=0.13899999976274557, error='[Errno 11001] getaddrinfo failed'), tcp=None, tls=None, http=None)
+total_ms: 0.13899999976274557
+
+https://10.255.255.1 -> DiagnosisResult(url=ParsedUrl(hostname='10.255.255.1', path='/'), dns=DnsResult(ip='10.255.255.1', duration_ms=0.032500000088475645, error=None), tcp=TcpResult(sock=None, duration_ms=5000.50629999987, error='TimeoutError: timed out'), tls=None, http=None)
+total_ms: 5000.538799999958
+
+expired.badssl.com -> DiagnosisResult(url=ParsedUrl(hostname='expired.badssl.com', path='/'), dns=DnsResult(ip='104.154.89.105', duration_ms=0.21569999989878852, error=None), tcp=TcpResult(sock=<socket.socket [closed] fd=-1, family=2, type=1, proto=0>, duration_ms=119.19829999987996, error=None), tls=TlsResult(sock=None, duration_ms=277.47740000086196, version=None, error='SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1018)'), http=None)
+total_ms: 396.8914000006407
+
+ValueError: Only https:// URLs are supported, got http://
+```
+
+| URL | Where it stopped | Steps that stayed `None` |
+| --- | --- | --- |
+| example.com | finished (200 OK) | none |
+| google.com | finished (301 → https://www.google.com/) | none |
+| doesnotexist.invalid | DNS | tcp, tls, http |
+| https://10.255.255.1 | TCP (timed out after my 5 s timeout) | tls, http |
+| expired.badssl.com | TLS (expired certificate) | http |
+| http://example.com | raised `ValueError` before any step ran | n/a |
+
+I checked `total_ms` by hand for example.com: 0.34 + 17.23 + 20.51 + 78.40 = 116.48 ms, which matches.
+
+**What I learned:**
+
+- Stopping at the first failure means a broken step never passes `None` into the next one, which fixed the crash my earlier test code could have hit.
+- The sockets show as `[closed]` in the result, because `http_get` (or a failed `tls_handshake`) closes them. The result keeps the timings, not the open connection.
+- DNS took under 1 ms inside `diagnose`, because the same hostnames had already been looked up earlier in the same run. This is faster than the ~7 ms cached lookups in Research (4), and I haven't found out why yet.
+- For `10.255.255.1` the "DNS" step took 0.03 ms, because the input was already an IP address so there was nothing to look up.
+- expired.badssl.com's TCP connect took 119 ms vs ~17 ms for example.com. Since TCP connect time is about one round trip (Research (8)), badssl.com's server is much further away from me than example.com's.
