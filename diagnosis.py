@@ -111,6 +111,71 @@ def tls_handshake(sock: socket.socket, hostname: str) -> TlsResult:
     return TlsResult(sock=tls_sock, duration_ms=duration_ms, version=tls_sock.version())
 
 
+@dataclass
+class HttpResult:
+    status_code: int | None  # e.g. 200; None if the request failed
+    duration_ms: float  # time from sending the request to the first byte of the response
+    reason: str | None = None  # e.g. "OK"
+    location: str | None = None  # where a redirect points to; None if not a redirect
+    error: str | None = None  # None if the request succeeded
+
+
+def http_get(sock: ssl.SSLSocket, hostname: str, path: str) -> HttpResult:
+    """Send an HTTP/1.1 GET request and time how long until the first byte of the response.
+
+    Reads the status line and headers only, not the body.
+    The socket is always closed here, since this is the last step.
+    A failed request is returned as a result with `error` set, not raised.
+    """
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {hostname}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    )
+
+    start = time.perf_counter()
+    try:
+        sock.sendall(request.encode("ascii"))
+        data = sock.recv(4096)
+        duration_ms = (time.perf_counter() - start) * 1000
+        # Keep reading until the end of the headers (a blank line), in case they span several chunks
+        while data and b"\r\n\r\n" not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    except OSError as e:
+        duration_ms = (time.perf_counter() - start) * 1000
+        return HttpResult(status_code=None, duration_ms=duration_ms, error=f"{type(e).__name__}: {e}")
+    finally:
+        sock.close()
+
+    if not data:
+        return HttpResult(status_code=None, duration_ms=duration_ms,
+                          error="Server closed the connection without responding")
+
+    head = data.split(b"\r\n\r\n")[0].decode("iso-8859-1")
+    lines = head.split("\r\n")
+    parts = lines[0].split(" ", 2)  # e.g. ["HTTP/1.1", "200", "OK"]
+    if len(parts) < 2 or not parts[1].isdigit():
+        return HttpResult(status_code=None, duration_ms=duration_ms,
+                          error=f"Unexpected response: {lines[0]!r}")
+
+    location = None
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        if name.strip().lower() == "location":
+            location = value.strip()
+
+    return HttpResult(
+        status_code=int(parts[1]),
+        duration_ms=duration_ms,
+        reason=parts[2] if len(parts) == 3 else "",
+        location=location,
+    )
+
+
 if __name__ == "__main__":
     print(parse_url("https://example.com/page?x=1"))
     print(parse_url("example.com"))
@@ -134,7 +199,15 @@ if __name__ == "__main__":
         tls = tls_handshake(tcp.sock, host)
         print(host, "->", tls)
         if tls.sock:
-            tls.sock.close()  
+            tls.sock.close()
+
+    # HTTP: a normal page, then one that redirects (google.com -> www.google.com)
+    for host in ["example.com", "google.com"]:
+        dns = resolve_dns(host)
+        tcp = connect_tcp(dns.ip)
+        tls = tls_handshake(tcp.sock, host)
+        http = http_get(tls.sock, host, "/")
+        print(host, "->", http)
 
 
 

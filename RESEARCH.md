@@ -468,10 +468,10 @@ The first command printed a plain number because `verify_flags` is a set of bit 
 - Python's default context checks the chain, dates and hostname, but not revocation (both CRL flags are off). My tool would accept a revoked certificate.
 - curl on Windows (Schannel) does check revocation by default, but turning it off with `--ssl-no-revoke` didn't change curl's TLS time (see Research (12)), so this isn't why curl is slower.
 
-
 ### Research (12) - Python vs curl TLS times
 
 Sources:
+
 - https://curl.se/docs/manpage.html#--ssl-no-revoke
 - https://docs.python.org/3/library/ssl.html
 
@@ -487,13 +487,13 @@ tls done: 0.064063
 
 `time_connect` is when the TCP connection finished and `time_appconnect` is when the TLS handshake finished, so the TLS time is the difference between them.
 
-| Tool | Run | TLS time |
-|---|---|---|
-| Python (`tls_handshake`) | 3 runs | 24.4, 27.6, 28.3 ms |
-| curl | run 1 | 64.1 − 23.5 = 40.6 ms |
-| curl | run 2 | 70.0 − 24.4 = 45.6 ms |
-| curl | run 3 | 73.2 − 25.0 = 48.2 ms |
-| curl `--ssl-no-revoke` | 1 run | 87.1 − 38.0 = 49.1 ms |
+| Tool                     | Run    | TLS time              |
+| ------------------------ | ------ | --------------------- |
+| Python (`tls_handshake`) | 3 runs | 24.4, 27.6, 28.3 ms   |
+| curl                     | run 1  | 64.1 − 23.5 = 40.6 ms |
+| curl                     | run 2  | 70.0 − 24.4 = 45.6 ms |
+| curl                     | run 3  | 73.2 − 25.0 = 48.2 ms |
+| curl `--ssl-no-revoke`   | 1 run  | 87.1 − 38.0 = 49.1 ms |
 
 curl was consistently roughly 15–20 ms slower. To see why, I checked which TLS library each tool uses:
 
@@ -504,7 +504,7 @@ PS> python -c "import ssl; print(ssl.OPENSSL_VERSION)"
 OpenSSL 3.0.15 3 Sep 2024
 ```
 
-curl on Windows uses Schannel (Windows' own TLS library), while Python's `ssl` module uses OpenSSL meaning  the two tools run different TLS code.
+curl on Windows uses Schannel (Windows' own TLS library), while Python's `ssl` module uses OpenSSL meaning the two tools run different TLS code.
 
 One idea was that Schannel checks certificate revocation, which Python doesn't (Research (11)). The curl docs say `--ssl-no-revoke` turns this check off for Schannel. However, the TLS time with it turned off (49.1 ms) was no faster, so revocation checking doesn't explain the gap.
 
@@ -514,3 +514,107 @@ One idea was that Schannel checks certificate revocation, which Python doesn't (
 - I couldn't find the exact cause of the gap. It is probably something inside Schannel versus OpenSSL, but I didn't find a source that confirms this, so I'm leaving it unresolved.
 - For my tool this doesn't matter much. What matters is that my own measurements are consistent between runs.
 
+## Day 6 (14/11/2026)
+
+### Research (13) - The HTTP request and time to first byte
+
+Sources:
+
+- https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
+- https://portswigger.net/web-security/host-header
+- https://web.dev/articles/ttfb
+
+**Anatomy of an HTTP message**
+
+Request:
+
+```text
+POST / HTTP/1.1                     <- start line
+Host: developer.mozilla.org         <- headers
+User-Agent: curl/8.6.0
+Accept: */*
+Content-Type: application/json
+Content-Length: 345
+                                    <- empty line
+{                                   <- body
+"data": "ABC123"
+}
+```
+
+Response:
+
+```text
+HTTP/1.1 403 Forbidden              <- start line
+Server: Apache                      <- headers
+Date: Fri, 21 Jun 2024 12:52:39 GMT
+Content-Length: 678
+Content-Type: text/html
+Cache-Control: no-store
+                                    <- empty line
+<!DOCTYPE html>                     <- body
+<html lang="en">
+(more data…)
+```
+
+The purpose of a HTTP host header is to help identify which back-end component the client wants to communicate with. If requests didn't contain Host headers, or if the Host header was malformed in some way, this could lead to issues when routing incoming request to the intended application.
+
+**Status codes**
+
+Responses are grouped in five classes.
+
+1. Informational responses (100-199)
+2. Successful responses (200-299)
+3. Redirection messages (300-399)
+4. Client error messages (400-499)
+5. Server error responses (500-599)
+
+301 - URL of the requested resource has been changed permanently. The new URL is given in the response.
+302 - This response code means the URI of requested resource has been changed temporarily.
+
+**Time to first byte (TTFB)**
+
+TTFB is a metric that measures the time between starting navigating to a page and when the first byte of a response begins to arrive.
+TTFB is the sum of the following request phases:
+
+- Redirect time
+- Service worker startup time
+- DNS lookup
+- Connection and TLS negotiation
+- Request, up until the point at which the first byte of the response has arrived.
+
+Most sites should strive to have a TTFB of 0.8 seconds or less. I'll keep this value in mind to help my tool interpret results later.
+
+web.dev's TTFB covers the whole chain (DNS + TCP + TLS + HTTP) but my http_get only times the HTTP part. To compare with the 0.8s guideline, I need to add all four steps together (for example.com 7 + 16 + 22 + 82 = 127ms)
+
+**What I tried:**
+
+I ran `http_get` against example.com (a normal page) and google.com (which redirects to www.google.com):
+
+```powershell
+PS> python diagnosis.py
+example.com -> HttpResult(status_code=200, duration_ms=82.30789999925037, reason='OK', location=None, error=None)
+google.com -> HttpResult(status_code=301, duration_ms=52.33470000075613, reason='Moved Permanently', location='https://www.google.com/', error=None)
+```
+
+In the same run, example.com's TCP connect took 15.9 ms and its TLS handshake took 22.1 ms.
+
+I checked the google.com result against curl. `time_starttransfer` is when the first byte of the response arrived and `time_appconnect` is when TLS finished, so the difference is curl's equivalent of my HTTP time:
+
+```powershell
+PS> curl.exe -4 -s -o NUL -w "status: %{http_code}\nredirect: %{redirect_url}\nfirst byte: %{time_starttransfer}\ntls done: %{time_appconnect}\n" https://google.com
+status: 301
+redirect: https://www.google.com/
+first byte: 0.235307
+tls done: 0.200303
+```
+
+|         | Status | Redirect to             | HTTP time               |
+| ------- | ------ | ----------------------- | ----------------------- |
+| My tool | 301    | https://www.google.com/ | 52.3 ms                 |
+| curl    | 301    | https://www.google.com/ | 235.3 − 200.3 = 35.0 ms |
+
+**What I learned:**
+
+- The HTTP step was much slower than TCP or TLS for example.com (82ms vs 16 and 22ms) because it includes the server preparing its reply and not just network round trips.
+- My status code and redirect matched curl's exactly, while the timings differed between single runs.
+- HTTP/1.1 keeps connections open by default, so the same connection can be reused for more requests. I send Connection: close because my tool only makes one request, so the server can close the connection once it has replied.

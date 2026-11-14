@@ -35,3 +35,11 @@ This project is assisted by Claude Code.
 - Claude's guess that the revocation check was slowing curl down wasn't supported by my --ssl-no-revoke test.
 - Claude expected verify_flags to print flag names, but it printed 557088 so I had to check the bits individually.
 - Claude was used to draft commit messages which was reviewed before committing.
+
+## Day 6 (14/11/2026)
+
+- Claude wrote `http_get` after I made the design decisions (GET, HTTP/1.1, time to first byte, report redirects without following them).
+- I tested it against example.com (200) and google.com (301), and checked the status code and redirect against curl, which matched exactly.
+- Claude transcribed the MDN request/response diagram into text for RESEARCH.md; I checked it against the image.
+- Claude added my test output to RESEARCH.md and fixed typos.
+- Claude was used to draft commit messages which was reviewed before committing.
